@@ -1,0 +1,103 @@
+#!pip install requests_html
+#!pip install yahoo_fin
+import yahoo_fin.stock_info as si
+import pandas as pd
+import numpy as np
+import statsmodels.tsa.stattools as ts
+import statsmodels.api as sm
+#tickers = ['SPY','BAC','ZION','C','GS','F','AXP','IBM','CFR','KRE','XLF','QQQ']
+tickers = ['SPY','BAC','ZION','C']
+
+#workflow:
+#ALPHA
+#compute beta vs spx
+#actual vs expected return: 1 day, 1 week
+#PAIR TRADING
+#identify cointegrated pairs
+#compute cointegrated pairs spreads
+#compute z scores for cointegrated pair spreads
+#stack rank z scores of cointegrated pairs
+#LINEAR TRENDS
+#compute log return fit line for stock
+#r squareds ... top quartile ... actual vs expected return.
+
+class StockData:
+    def __init__(self, ticker):
+        self.ticker = ticker
+        self.data = 0
+        self.beta = 0
+        self.list_coints = {}
+        self.r2 = 0
+
+class Portfolio:
+    def __init__(self,ticker_list):
+        self.stocks = {}
+        self.stock_data = None
+        for ticker in ticker_list:
+            self.stocks[ticker] = StockData(ticker)
+    
+    def get_price_data(self):
+        dict_prices = {}
+        self.stock_data = pd.DataFrame()
+        for key in self.stocks:
+            dict_prices[key] = si.get_data(key,start_date = '01/01/2009')
+            df = pd.DataFrame(dict_prices[key])
+            df['pct_change'] = df.adjclose.pct_change()
+            df['log_return'] = np.log(1 + df['pct_change'].astype(float))
+            df['ticker'] = key
+            self.stocks[key].data = df
+            df[key] = df['pct_change']
+            df = df[[key]]
+            self.stock_data = pd.concat([self.stock_data,df],axis = 1)
+    
+    def get_portfolio_return(self,df,n):
+        df = df.iloc[-n:,].copy()
+        for col in df.columns:
+            df[col+'_cmltv_ret'] = np.exp(np.log1p(df[col]).cumsum())-1
+        list_cols = []
+        for col in df.columns:
+            if 'cmltv' in col and 'SPY' not in col:
+                list_cols.append(col)
+        df['portfolio_return'] = df[list_cols].mean(axis=1)
+        return df
+
+    def get_returns(self):
+        self.port_ret_5 = self.get_portfolio_return(pm.stock_data,5)
+        self.port_ret_30 = self.get_portfolio_return(pm.stock_data,30)
+        self.port_ret_90 = self.get_portfolio_return(pm.stock_data,90)
+        self.port_ret_252 = self.get_portfolio_return(pm.stock_data,252)
+        return
+    
+    def get_cointegrated_pairs(self):
+        #test is self.stock_data is None
+        if self.stock_data is not None:
+            for key_i in self.stocks:
+                if key_i is not "SPY":
+                    print("key_i"+key_i)
+                    for key_j in self.stocks:
+                        if key_j is not key_i:
+                            print("key_j"+key_j)
+                            x = self.stock_data[self.stock_data['ticker'] == key_i]['adjclose']
+                            y = self.stock_data[self.stock_data['ticker'] == key_j]['adjclose']
+                            coin_result = ts.coint(x, y)
+                            z = coin_result[1]*252
+                            self.stocks[key_i].list_coints[key_j] = z
+
+                            
+pm = Portfolio(tickers)
+#pm.stocks['BAC'].ticker
+pm.get_price_data()
+
+#pm.get_returns()
+#pm.port_ret_252
+#df = pd.DataFrame.from_dict(pm.stocks['BAC'].list_coints,orient='index')
+#pm.stock_data.tail(50)
+for col in pm.port_ret_252.columns:
+    if 'ret' in col and 'SPY' not in col:
+        y = pm.port_ret_252[col]
+        x = pm.port_ret_252['SPY_cmltv_ret']
+        res = sm.OLS(y, x).fit()
+        ticker = col.split('_')[0]
+        beta = res.params[0]
+        r2 = res.rsquared
+        print("Ticker {} Beta: {} R2: {}".format(ticker,beta,r2))
